@@ -1,0 +1,60 @@
+```mermaid
+sequenceDiagram
+    title Document Signature Flow - ASOF & Assinafy Integration
+
+    actor User as ASOF User
+    participant ASOF as ASOF System
+    participant Assinafy as Assinafy API
+    participant Signer as External Signer
+
+    User->>ASOF: 1. Initiate signature request
+    ASOF->>ASOF: 2. Generate/convert DOCX to PDF
+    ASOF->>ASOF: 3. Calculate SHA-256 hash
+
+    ASOF->>Assinafy: 4. Upload document (PDF)
+    activate Assinafy
+    Assinafy-->>ASOF: document_id
+    deactivate Assinafy
+
+    ASOF->>Assinafy: 5. Create/find signers
+    activate Assinafy
+    Assinafy-->>ASOF: signer_id(s)
+    deactivate Assinafy
+
+    ASOF->>ASOF: 6. Wait for metadata_ready
+
+    alt Virtual Method (Internal)
+        ASOF->>Assinafy: 7a. Create assignment (virtual)
+    else Collect Method (External)
+        ASOF->>Assinafy: 7b. Create assignment (collect + entries)
+    end
+
+    activate Assinafy
+    Assinafy-->>ASOF: assignment_id
+    deactivate Assinafy
+
+    Assinafy->>Signer: 8. Send notification (Email/WhatsApp)
+
+    Signer->>Assinafy: 9. Access signature link
+
+    alt Signer approves
+        Signer->>Assinafy: 10a. Sign document
+        Assinafy->>Assinafy: certificating
+    else Signer rejects
+        Signer->>Assinafy: 10b. Reject document
+        Assinafy->>Assinafy: rejected_by_signer
+    end
+
+    Assinafy->>ASOF: 11. Webhook callback (status update)
+
+    alt Document certificated
+        ASOF->>Assinafy: 12. Download certificated artifact
+        activate Assinafy
+        Assinafy-->>ASOF: PDF bundle/certificated
+        deactivate Assinafy
+
+        ASOF->>ASOF: 13. Calculate SHA-256 of certificated
+        ASOF->>ASOF: 14. Archive document
+        ASOF->>ASOF: 15. Update process status
+    end
+```

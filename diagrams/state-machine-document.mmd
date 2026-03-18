@@ -1,0 +1,54 @@
+```mermaid
+stateDiagram-v2
+    title Document Status State Machine - Assinafy Integration
+
+    [*] --> uploading: Upload initiated
+
+    uploading --> uploaded: File received
+    uploaded --> metadata_processing: Processing started
+
+    metadata_processing --> metadata_ready: Processing complete
+    metadata_processing --> failed: Processing error
+
+    metadata_ready --> pending_signature: Assignment created
+
+    pending_signature --> certificating: All signatures collected
+    pending_signature --> rejected_by_signer: Signer rejects
+    pending_signature --> rejected_by_user: User cancels
+    pending_signature --> expired: Deadline reached
+
+    certificating --> certificated: Certification complete
+    certificating --> failed: Certification error
+
+    rejected_by_signer --> [*]: Process terminated
+    rejected_by_user --> [*]: Process terminated
+    certificated --> [*]: Process complete
+    failed --> [*]: Process terminated
+
+    expired --> [*]: Process terminated
+
+    note right of uploading
+        Initial state after
+        POST /documents
+    end note
+
+    note right of metadata_ready
+        Document ready for
+        assignment creation
+    end note
+
+    note right of pending_signature
+        Waiting for signers
+        to complete
+    end note
+
+    note right of certificated
+        Final state - artifact
+        ready for download
+    end note
+
+    note right of expired
+        Automatic transition
+        after expires_at
+    end note
+```

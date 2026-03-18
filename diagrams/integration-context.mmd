@@ -1,0 +1,17 @@
+```mermaid
+C4Context
+    title Assinafy Integration Context - ASOF System
+
+    Person(user, "ASOF Users", "Internal users who initiate signature processes")
+    Person(signer, "External Signers", "External parties who sign documents")
+
+    System_Boundary(asof_boundary, "ASOF") {
+        System(asof, "ASOF System", "Document management and signature orchestration")
+    }
+
+    System_Ext(assinafy, "Assinafy API", "Digital signature platform")
+
+    Rel(user, asof, "Uses", "Web UI")
+    Rel(asof, assinafy, "Integrates with", "REST/HTTPS")
+    Rel(assinafy, signer, "Sends notification", "Signature links")
+```

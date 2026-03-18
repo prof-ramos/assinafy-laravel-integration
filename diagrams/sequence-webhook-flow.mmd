@@ -1,0 +1,56 @@
+```mermaid
+sequenceDiagram
+    title Webhook Processing Flow - Assinafy to ASOF
+
+    participant Assinafy as Assinafy API
+    participant ASOF_API as ASOF Webhook Endpoint
+    participant Validator as Signature Validator
+    participant Queue as Job Queue
+    participant DB as Database
+    participant Log as Audit Log
+
+    Assinafy->>ASOF_API: 1. POST /webhook/assinafy
+    activate ASOF_API
+
+    ASOF_API->>Validator: 2. Validate webhook signature
+    activate Validator
+
+    alt Invalid signature
+        Validator-->>ASOF_API: Validation failed
+        ASOF_API-->>Assinafy: 401 Unauthorized
+        deactivate ASOF_API
+    else Valid signature
+        Validator-->>ASOF_API: Signature valid
+        deactivate Validator
+
+        ASOF_API->>ASOF_API: 3. Parse event payload
+        ASOF_API->>Queue: 4. Queue async job
+        activate Queue
+        Queue-->>ASOF_API: job_id
+        deactivate Queue
+
+        ASOF_API-->>Assinafy: 200 OK
+        deactivate ASOF_API
+
+        Note over Queue: Async processing begins
+
+        Queue->>DB: 5. Update document status
+        activate DB
+        DB-->>Queue: Success
+        deactivate DB
+
+        Queue->>Log: 6. Log webhook event
+        activate Log
+        Log-->>Queue: Logged
+        deactivate Log
+
+        Queue->>DB: 7. Store raw payload snapshot
+        activate DB
+        DB-->>Queue: Success
+        deactivate DB
+
+        alt Document is certificated
+            Queue->>Queue: 8. Trigger download job
+        end
+    end
+```
