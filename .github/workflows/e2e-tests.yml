@@ -1,0 +1,400 @@
+# ============================================================================
+# E2E Tests GitHub Actions Workflow
+# ============================================================================
+# Runs Playwright end-to-end tests on every push and pull request
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Concurrency to prevent overlapping runs
+concurrency:
+  group: e2e-tests-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # E2E Tests Job
+  # ============================================================================
+  e2e:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+
+    # Services
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testing
+          MYSQL_DATABASE: assinafy_testing
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    # Environment variables
+    env:
+      APP_ENV: testing
+      APP_URL: http://127.0.0.1:8000
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: assinafy_testing
+      DB_USERNAME: root
+      DB_PASSWORD: testing
+      ASSINAFY_ENV: sandbox
+      ASSINAFY_API_KEY: ${{ secrets.TEST_ASSINAFY_API_KEY }}
+      ASSINAFY_ACCOUNT_ID: ${{ secrets.TEST_ASSINAFY_ACCOUNT_ID }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Setup PHP
+      # -----------------------------------------------------------------------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_mysql, mbstring, zip
+          coverage: none
+
+      # -----------------------------------------------------------------------
+      # Setup Node.js
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/E2E/package-lock.json
+
+      # -----------------------------------------------------------------------
+      # Install Dependencies
+      # -----------------------------------------------------------------------
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-dev
+
+      - name: Install Node dependencies
+        working-directory: tests/E2E
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests/E2E
+        run: npx playwright install --with-deps chromium
+
+      # -----------------------------------------------------------------------
+      # Setup Laravel
+      # -----------------------------------------------------------------------
+      - name: Copy environment file
+        run: cp .env.example .env
+
+      - name: Generate application key
+        run: php artisan key:generate
+
+      - name: Run migrations
+        run: php artisan migrate --force --seed
+
+      - name: Create storage links
+        run: php artisan storage:link
+
+      - name: Cache config
+        run: php artisan config:cache
+
+      # -----------------------------------------------------------------------
+      # Run E2E Tests
+      # -----------------------------------------------------------------------
+      - name: Run Playwright tests
+        working-directory: tests/E2E
+        run: npx playwright test
+        env:
+          CI: true
+
+      # -----------------------------------------------------------------------
+      # Upload Test Results
+      # -----------------------------------------------------------------------
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/E2E/playwright-report/
+          retention-days: 30
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: tests/E2E/test-results/
+          retention-days: 30
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: tests/E2E/test-results/screenshots/
+          retention-days: 7
+
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traces
+          path: tests/E2E/test-results/traces/
+          retention-days: 7
+
+      # -----------------------------------------------------------------------
+      # Upload Videos
+      # -----------------------------------------------------------------------
+      - name: Upload videos
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videos
+          path: tests/E2E/test-results/videos/
+          retention-days: 7
+
+      # -----------------------------------------------------------------------
+      # Comment PR with Results
+      # -----------------------------------------------------------------------
+      - name: Comment PR with test results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            // Check if JUnit results exist
+            const junitPath = 'tests/E2E/test-results/e2e-junit.xml';
+            let comment = '## 🧪 E2E Test Results\n\n';
+
+            if (fs.existsSync(junitPath)) {
+              // Parse JUnit for summary (simplified)
+              try {
+                const content = fs.readFileSync(junitPath, 'utf8');
+                const tests = content.match(/tests="(\d+)"/);
+                const failures = content.match(/failures="(\d+)"/);
+                const errors = content.match(/errors="(\d+)"/);
+
+                const testCount = tests ? tests[1] : 0;
+                const failureCount = failures ? failures[1] : 0;
+                const errorCount = errors ? errors[1] : 0;
+                const passed = testCount - failureCount - errorCount;
+
+                const emoji = passed == testCount ? '✅' : '❌';
+                comment += `${emoji} **Tests:** ${passed}/${testCount} passed\n`;
+
+                if (failureCount > 0) {
+                  comment += `- ❌ Failures: ${failureCount}\n`;
+                }
+                if (errorCount > 0) {
+                  comment += `- ⚠️ Errors: ${errorCount}\n`;
+                }
+              } catch (e) {
+                comment += '⚠️ Could not parse test results\n';
+              }
+            }
+
+            comment += '\n📊 Detailed reports available in the workflow artifacts.\n';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ============================================================================
+  # Multi-Browser E2E Tests
+  # ============================================================================
+  e2e-multi-browser:
+    name: E2E Tests (${{ browser }})
+    runs-on: ubuntu-latest
+    needs: e2e
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testing
+          MYSQL_DATABASE: assinafy_testing
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    env:
+      APP_ENV: testing
+      APP_URL: http://127.0.0.1:8000
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: assinafy_testing
+      DB_USERNAME: root
+      DB_PASSWORD: testing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_mysql, mbstring, zip
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          composer install --no-interaction --prefer-dist --no-dev
+          cd tests/E2E && npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests/E2E
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Setup Laravel
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force --seed
+          php artisan storage:link
+
+      - name: Run tests on ${{ matrix.browser }}
+        working-directory: tests/E2E
+        run: npx playwright test --project=${{ matrix.browser }}
+        env:
+          CI: true
+
+  # ============================================================================
+  # Visual Regression Tests
+  # ============================================================================
+  visual-regression:
+    name: Visual Regression Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testing
+          MYSQL_DATABASE: assinafy_testing
+        ports:
+          - 3306:3306
+
+    env:
+      APP_ENV: testing
+      APP_URL: http://127.0.0.1:8000
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: assinafy_testing
+      DB_USERNAME: root
+      DB_PASSWORD: testing
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_mysql, mbstring, zip
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          composer install --no-interaction --prefer-dist --no-dev
+          cd tests/E2E && npm ci
+
+      - name: Install Playwright
+        working-directory: tests/E2E
+        run: npx playwright install --with-deps
+
+      - name: Setup Laravel
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --force --seed
+          php artisan storage:link
+
+      - name: Download baseline screenshots
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-screenshots
+          path: tests/E2E/screenshots/baseline/
+
+      - name: Run visual tests
+        working-directory: tests/E2E
+        run: npx playwright test --grep="@visual"
+
+      - name: Upload visual diff results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diff-results
+          path: tests/E2E/test-results/visual-diff/
+          retention-days: 7
+
+      - name: Comment visual diffs on PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diffDir = 'tests/E2E/test-results/visual-diff';
+
+            if (fs.existsSync(diffDir)) {
+              const files = fs.readdirSync(diffDir);
+              if (files.length > 0) {
+                let comment = '## 🎨 Visual Regression Results\n\nSome visual changes detected:\n\n';
+                files.forEach(file => {
+                  comment += `- 📸 ${file}\n`;
+                });
+                comment += '\nDownload the visual-diff-results artifact to review.';
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            }

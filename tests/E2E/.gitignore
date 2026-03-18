@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Test output
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Environment
+.env.testing
+.env.local
+
+# Editor
+.vscode/
+.idea/
+*.log
